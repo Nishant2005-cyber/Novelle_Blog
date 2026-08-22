@@ -20,34 +20,20 @@ export default function Post() {
     const userData = useSelector((state) => state.auth.userData);
     const isAuthor = post && userData ? post.userId === userData.$id : false;
 
-    // Likes System (Starts at 0, per-post storage persistence)
+    // Likes System (Starts from remote post data, per-post storage persistence)
+    const userKey = userData?.$id || 'guest';
     const [liked, setLiked] = useState(() => {
         if (typeof window !== "undefined" && slug) {
-            return localStorage.getItem(`post_liked_${slug}`) === "true";
+            return localStorage.getItem(`post_liked_${slug}_${userKey}`) === "true" ||
+                   localStorage.getItem(`post_liked_${slug}`) === "true";
         }
         return false;
     });
 
-    const [likesCount, setLikesCount] = useState(() => {
-        if (typeof window !== "undefined" && slug) {
-            const saved = localStorage.getItem(`post_likes_${slug}`);
-            return saved !== null ? parseInt(saved, 10) : 0;
-        }
-        return 0;
-    });
+    const [likesCount, setLikesCount] = useState(0);
 
     // Comments System (Max 100 comments, < 50 words each)
-    const [comments, setComments] = useState(() => {
-        if (typeof window !== "undefined" && slug) {
-            try {
-                const saved = localStorage.getItem(`post_comments_${slug}`);
-                return saved ? JSON.parse(saved) : [];
-            } catch (e) {
-                return [];
-            }
-        }
-        return [];
-    });
+    const [comments, setComments] = useState([]);
 
     const [commentText, setCommentText] = useState("");
     const [commenterName, setCommenterName] = useState(userData?.name || "");
@@ -64,9 +50,37 @@ export default function Post() {
     useEffect(() => {
         if (slug) {
             setLoading(true);
-            appwriteService.getPost(slug).then((post) => {
-                if (post) setPost(post);
-                else navigate("/");
+            appwriteService.getPost(slug).then((fetchedPost) => {
+                if (fetchedPost) {
+                    setPost(fetchedPost);
+
+                    // Sync remote likes
+                    let remoteLikes = 0;
+                    if (typeof fetchedPost.likes === 'number') {
+                        remoteLikes = fetchedPost.likes;
+                    } else if (Array.isArray(fetchedPost.likes)) {
+                        remoteLikes = fetchedPost.likes.length;
+                    } else if (fetchedPost.likes) {
+                        remoteLikes = parseInt(fetchedPost.likes, 10) || 0;
+                    }
+                    setLikesCount(remoteLikes);
+
+                    // Sync remote comments
+                    let remoteComments = [];
+                    if (Array.isArray(fetchedPost.comments)) {
+                        remoteComments = fetchedPost.comments;
+                    } else if (typeof fetchedPost.comments === 'string' && fetchedPost.comments.trim()) {
+                        try {
+                            remoteComments = JSON.parse(fetchedPost.comments);
+                        } catch (e) {
+                            console.warn("Could not parse comments JSON from Appwrite:", e);
+                            remoteComments = [];
+                        }
+                    }
+                    setComments(Array.isArray(remoteComments) ? remoteComments : []);
+                } else {
+                    navigate("/");
+                }
             }).finally(() => {
                 setLoading(false);
             });
@@ -77,7 +91,11 @@ export default function Post() {
         if (userData?.name && !commenterName) {
             setCommenterName(userData.name);
         }
-    }, [userData]);
+        if (userData?.$id && slug) {
+            const hasLiked = localStorage.getItem(`post_liked_${slug}_${userData.$id}`) === "true";
+            setLiked(hasLiked);
+        }
+    }, [userData, slug]);
 
     // Handle Article Deletion
     const executeDeletePost = async () => {
@@ -105,20 +123,20 @@ export default function Post() {
         setTimeout(() => setCopied(false), 2500);
     };
 
-    // Like Toggle Handler
-    const handleLike = () => {
-        if (!liked) {
-            const nextLikes = likesCount + 1;
-            setLiked(true);
-            setLikesCount(nextLikes);
-            localStorage.setItem(`post_liked_${slug}`, "true");
-            localStorage.setItem(`post_likes_${slug}`, String(nextLikes));
-        } else {
-            const nextLikes = Math.max(0, likesCount - 1);
-            setLiked(false);
-            setLikesCount(nextLikes);
-            localStorage.setItem(`post_liked_${slug}`, "false");
-            localStorage.setItem(`post_likes_${slug}`, String(nextLikes));
+    // Like Toggle Handler with Appwrite Cloud Sync
+    const handleLike = async () => {
+        const nextLiked = !liked;
+        const nextLikes = nextLiked ? likesCount + 1 : Math.max(0, likesCount - 1);
+        
+        setLiked(nextLiked);
+        setLikesCount(nextLikes);
+
+        const currentKey = userData?.$id || 'guest';
+        localStorage.setItem(`post_liked_${slug}_${currentKey}`, nextLiked ? "true" : "false");
+        localStorage.setItem(`post_liked_${slug}`, nextLiked ? "true" : "false");
+
+        if (post?.$id) {
+            await appwriteService.updateLikes(post.$id, nextLikes);
         }
     };
 
@@ -129,8 +147,8 @@ export default function Post() {
 
     const currentWordCount = getWordCount(commentText);
 
-    // Comment Submit Handler
-    const handleCommentSubmit = (e) => {
+    // Comment Submit Handler with Appwrite Cloud Sync
+    const handleCommentSubmit = async (e) => {
         e.preventDefault();
         setCommentError("");
         setCommentSuccess("");
@@ -164,19 +182,22 @@ export default function Post() {
 
         const updatedComments = [newComment, ...comments];
         setComments(updatedComments);
-        localStorage.setItem(`post_comments_${slug}`, JSON.stringify(updatedComments));
         setCommentText("");
         setCommentSuccess("Comment posted successfully!");
         setTimeout(() => setCommentSuccess(""), 3000);
+
+        if (post?.$id) {
+            await appwriteService.updateComments(post.$id, updatedComments);
+        }
     };
 
-    // Confirm and Delete a comment
-    const confirmDeleteComment = () => {
-        if (commentToDelete) {
+    // Confirm and Delete a comment with Appwrite Cloud Sync
+    const confirmDeleteComment = async () => {
+        if (commentToDelete && post?.$id) {
             const updated = comments.filter(c => c.id !== commentToDelete);
             setComments(updated);
-            localStorage.setItem(`post_comments_${slug}`, JSON.stringify(updated));
             setCommentToDelete(null);
+            await appwriteService.updateComments(post.$id, updated);
         }
     };
 

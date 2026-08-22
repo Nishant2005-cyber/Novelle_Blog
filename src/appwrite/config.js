@@ -75,6 +75,40 @@ export class Service{
         }
     }
 
+    async updateLikes(slug, likesCount){
+        try {
+            const count = Number(likesCount) >= 0 ? Number(likesCount) : 0;
+            return await this.databases.updateDocument(
+                conf.appwriteDatabaseId,
+                conf.appwriteCollectionId,
+                slug,
+                {
+                    likes: count,
+                }
+            );
+        } catch (error) {
+            console.warn("Appwrite service :: updateLikes error (check if 'likes' attribute exists in Appwrite)", error);
+            return false;
+        }
+    }
+
+    async updateComments(slug, comments){
+        try {
+            const commentsPayload = typeof comments === 'string' ? comments : JSON.stringify(comments);
+            return await this.databases.updateDocument(
+                conf.appwriteDatabaseId,
+                conf.appwriteCollectionId,
+                slug,
+                {
+                    comments: commentsPayload,
+                }
+            );
+        } catch (error) {
+            console.warn("Appwrite service :: updateComments error (check if 'comments' attribute exists in Appwrite)", error);
+            return false;
+        }
+    }
+
     async deletePost(slug){
         try {
             await this.databases.deleteDocument(
